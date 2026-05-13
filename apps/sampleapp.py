@@ -34,27 +34,46 @@ app = AsynapRous()
 # Format: {"username": {"ip": "192.168.1.5", "port": 5000}}
 active_peers = {}
 
+# ==========================================
+# 1.5 THE BOUNCER (Authentication Helper)
+# ==========================================
+def is_authenticated(headers):
+    """
+    Checks the incoming HTTP headers for the 'session_user' cookie.
+    Returns the username if found, otherwise returns False.
+    """
+    header_str = str(headers)
+    if "session_user=" in header_str:
+        try:
+            parts = header_str.split("session_user=")
+            username = parts[1].split(";")[0].strip(" '\"}")
+            return username
+        except:
+            return False
+    return False
+
 
 # ==========================================
-# 2. THE LOGIN SWITCH
+# 2. THE LOGIN SWITCH (Cookie Issuer)
 # ==========================================
 @app.route('/login', methods=['POST'])
 async def login(headers="guest", body="anonymous"):
-    """
-    Reads credentials from the client.
-    For the MVP, we just accept the username and return a success message.
-    (Note: True RFC 6265 implementation requires modifying the framework's Set-Cookie header).
-    """
-    print(f"[SampleApp] Login attempt: {body}")
-    
     try:
         credentials = json.loads(body)
         username = credentials.get("username")
         
         if username:
-            # In a full build, you would generate a session token here.
-            data = {"status": "success", "message": f"Welcome, {username}"}
-            return json.dumps(data).encode("utf-8")
+            response_body = json.dumps({"status": "success", "message": f"Welcome, {username}"})
+            
+            # Manually craft the response to force the Set-Cookie header
+            raw_http = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json\r\n"
+                f"Set-Cookie: session_user={username}; Path=/; HttpOnly\r\n"
+                f"Content-Length: {len(response_body)}\r\n\r\n"
+                f"{response_body}"
+            )
+            return raw_http.encode("utf-8")
         else:
             return json.dumps({"status": "error", "message": "Missing username"}).encode("utf-8")
             
@@ -63,45 +82,39 @@ async def login(headers="guest", body="anonymous"):
 
 
 # ==========================================
-# 3. PEER REGISTRATION
+# 3. PEER REGISTRATION (Protected)
 # ==========================================
 @app.route('/submit-info', methods=['POST'])
 async def submit_info(headers="guest", body="anonymous"):
-    """
-    When a peer logs in, they hit this endpoint with their listening IP and Port.
-    We add them to the active_peers dictionary.
-    """
-    print(f"[SampleApp] Received peer info: {body}")
-    
+    # 1. Check for the wristband
+    current_user = is_authenticated(headers)
+    if not current_user:
+        return json.dumps({"status": "error", "message": "Unauthorized"}).encode("utf-8")
+
+    # 2. If they have it, register them
     try:
         payload = json.loads(body)
-        username = payload.get("username")
         ip = payload.get("ip")
         port = payload.get("port")
         
-        if username and ip and port:
-            # Register the peer in the tracker
-            active_peers[username] = {"ip": ip, "port": port}
-            data = {"status": "success", "message": f"{username} registered in tracker."}
-            return json.dumps(data).encode("utf-8")
+        if ip and port:
+            active_peers[current_user] = {"ip": ip, "port": port}
+            return json.dumps({"status": "success", "message": f"{current_user} registered."}).encode("utf-8")
         else:
-            return json.dumps({"status": "error", "message": "Missing IP, Port, or Username"}).encode("utf-8")
+            return json.dumps({"status": "error", "message": "Missing IP or Port"}).encode("utf-8")
 
     except json.JSONDecodeError:
-        return json.dumps({"status": "error", "message": "Invalid JSON payload"}).encode("utf-8")
-
+        return json.dumps({"status": "error", "message": "Invalid payload"}).encode("utf-8")
 
 # ==========================================
-# 4. PEER DISCOVERY
+# 4. PEER DISCOVERY (Protected)
 # ==========================================
 @app.route('/get-list', methods=['GET'])
 async def get_list(headers="guest", body="anonymous"):
-    """
-    Peers call this to find out who else is online to establish P2P connections.
-    Returns the entire active_peers dictionary.
-    """
-    print(f"[SampleApp] Sending peer list. Current peers: {len(active_peers)}")
-    
+    # Check for the wristband
+    if not is_authenticated(headers):
+        return json.dumps({"status": "error", "message": "Unauthorized"}).encode("utf-8")
+        
     data = {
         "status": "success",
         "active_peers": active_peers
