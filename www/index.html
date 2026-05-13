@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>P2P Chat MVP</title>
+    <script>
+        // 1. LOGIN & REGISTER TO TRACKER
+        async function login() {
+            const username = document.getElementById("username").value;
+            
+            // Hit the /login endpoint
+            await fetch("/login", {
+                method: "POST",
+                body: JSON.stringify({username: username})
+            });
+
+            // Hit the /submit-info endpoint to register on the tracker
+            // Note: For local testing, we are hardcoding the IP. 
+            await fetch("/submit-info", {
+                method: "POST",
+                body: JSON.stringify({username: username, ip: "127.0.0.1", port: 2026}) 
+            });
+            
+            document.getElementById("status").innerText = "Logged in as " + username;
+        }
+
+        // 2. AUTO-POLL FOR ACTIVE PEERS (Every 5 seconds)
+        setInterval(async () => {
+            try {
+                const res = await fetch("/get-list");
+                const data = await res.json();
+                document.getElementById("peers").innerText = JSON.stringify(data.active_peers, null, 2);
+            } catch (e) {
+                console.log("Waiting for server...");
+            }
+        }, 5000);
+
+        // 3. AUTO-POLL FOR CHAT MESSAGES (Every 2 seconds)
+        setInterval(async () => {
+            try {
+                const res = await fetch("/get-messages");
+                const data = await res.json();
+                let chatText = "";
+                // Loop through messages and format them
+                data.messages.forEach(m => chatText += m.sender + ": " + m.message + "\n");
+                document.getElementById("chatbox").innerText = chatText;
+            } catch (e) {}
+        }, 2000);
+
+        // 4. SEND A MESSAGE
+        async function sendMessage() {
+            const msg = document.getElementById("msg").value;
+            const username = document.getElementById("username").value;
+            
+            await fetch("/send-peer", {
+                method: "POST",
+                body: JSON.stringify({username: username, message: msg})
+            });
+            
+            document.getElementById("msg").value = ""; // Clear the input box
+        }
+    </script>
+</head>
+<body style="font-family: monospace;">
+    <h2>CO3093/CO3094 MVP Dashboard</h2>
+    
+    <div>
+        <strong>Username:</strong> <input id="username" type="text" placeholder="Enter name...">
+        <button onclick="login()">Login & Register</button>
+        <span id="status" style="color: green; font-weight: bold; margin-left: 10px;"></span>
+    </div>
+    
+    <hr>
+
+    <div style="display: flex; gap: 20px;">
+        <div style="flex: 1;">
+            <h3>Active Peers (Tracker)</h3>
+            <pre id="peers" style="background: #eee; padding: 10px; border: 1px solid #ccc; min-height: 200px;">Loading...</pre>
+        </div>
+
+        <div style="flex: 2;">
+            <h3>Live Chat</h3>
+            <pre id="chatbox" style="height: 200px; border: 1px solid black; background: #fafafa; padding: 10px; overflow-y: scroll;"></pre>
+            <input id="msg" type="text" placeholder="Type a message..." style="width: 70%;">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+</body>
+</html>
