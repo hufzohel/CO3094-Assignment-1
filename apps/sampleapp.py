@@ -22,6 +22,8 @@ app.sampleapp
 import sys
 import os
 import importlib.util
+import urllib.request
+import urllib.error
 import json
 from daemon import AsynapRous
 
@@ -131,21 +133,17 @@ chat_history = []
 # ==========================================
 # 6. RECEIVE FROM PEER (NON-BLOCKING)
 # ==========================================
-# Notice the 'async def' instead of just 'def'
 @app.route('/send-peer', methods=['POST'])
 async def send_peer(headers="guest", body="anonymous"):
-    """
-    Asynchronous receiver. This allows the server to handle 
-    hundreds of incoming messages simultaneously without freezing.
-    """
     try:
         payload = json.loads(body)
         sender = payload.get("username", "Unknown")
         message = payload.get("message", "")
+        channel = payload.get("channel", "general") # Extract the channel
         
         if message:
-            chat_history.append({"sender": sender, "message": message})
-            print(f"[P2P Message] {sender}: {message}")
+            chat_history.append({"sender": sender, "message": message, "channel": channel})
+            print(f"[P2P - {channel}] {sender}: {message}")
             return json.dumps({"status": "delivered"}).encode("utf-8")
         else:
             return json.dumps({"status": "error", "message": "Empty message"}).encode("utf-8")
@@ -163,6 +161,52 @@ async def get_messages(headers="guest", body="anonymous"):
         "messages": chat_history
     }
     return json.dumps(data).encode("utf-8")
+
+# ==========================================
+# 8. THE BROADCASTER (P2P Sending)
+# ==========================================
+@app.route('/broadcast-peer', methods=['POST'])
+async def broadcast_peer(headers="guest", body="anonymous"):
+    current_user = is_authenticated(headers)
+    if not current_user:
+        return json.dumps({"status": "error", "message": "Unauthorized"}).encode("utf-8")
+
+    try:
+        payload = json.loads(body)
+        message = payload.get("message", "")
+        channel = payload.get("channel", "general") 
+        
+        if not message:
+            return json.dumps({"status": "error", "message": "Empty message"}).encode("utf-8")
+
+        # Add it to your OWN screen history immediately
+        chat_history.append({"sender": current_user, "message": message, "channel": channel})
+
+        # Blast it to everyone else on the tracker!
+        broadcast_payload = json.dumps({"username": current_user, "message": message, "channel": channel}).encode('utf-8')
+        
+        for peer_name, info in active_peers.items():
+            # Don't send the message to yourself
+            if peer_name == current_user:
+                continue
+                
+            ip = info['ip']
+            port = info['port']
+            url = f"http://{ip}:{port}/send-peer"
+            
+            try:
+                # The actual "sending" action using native Python libraries
+                req = urllib.request.Request(url, data=broadcast_payload, method='POST')
+                req.add_header('Content-Type', 'application/json')
+                urllib.request.urlopen(req, timeout=2) # 2-second timeout prevents freezing
+            except Exception:
+                # If a peer disconnected without telling us, just ignore them
+                pass 
+
+        return json.dumps({"status": "broadcast complete"}).encode("utf-8")
+
+    except json.JSONDecodeError:
+        return json.dumps({"status": "error", "message": "Invalid format"}).encode("utf-8")
 
 def create_sampleapp(ip, port):
     # Prepare and launch the RESTful application
