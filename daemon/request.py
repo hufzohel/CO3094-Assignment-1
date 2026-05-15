@@ -106,12 +106,12 @@ class Request():
 
     def prepare(self, request, routes=None):
         """Prepares the entire request with the given parameters."""
-
+    
         # Prepare the request line from the request header
         print("[Request] prepare request missg {}".format(request))
         self.method, self.path, self.version = self.extract_request_line(request)
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
-
+    
         #
         # @bksysnet Preapring the webapp hook with AsynapRous instance
         # The default behaviour with HTTP server is empty routed
@@ -128,41 +128,65 @@ class Request():
             # self.hook manipulation goes here
             # ...
             #
-
+            if not self.hook:
+                print("[Request] No hook mapped for the requested route.")
+    
         self._raw_heaers = ""
         self._raw_body =  ""
+
+        # 1. Extract the JSON body so sampleapp.py can read chat messages!
+        parts = request.split("\r\n\r\n", 1)
+        self.body = parts[1] if len(parts) > 1 else ""
+        
+        # 2. Extract the headers safely using only the top part of the request
+        self.headers = self.prepare_headers(parts[0])
+
+        # 3. Parse the Cookies for your Auth Bouncer
         cookies = self.headers.get('cookie', '')
-            #
-            #  TODO: implement the cookie function here
-            #        by parsing the header            #
+        self.cookies = {}
+        if cookies:
+            for item in cookies.split(';'):
+                if '=' in item:
+                    k, v = item.split('=', 1)
+                    self.cookies[k.strip()] = v.strip()
 
         return
-
+    
     def prepare_body(self, data, files, json=None):
         self.prepare_content_length(self.body)
         self.body = body
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+        # self.auth = ...
+        pass
         return
-
-
+    
+    
     def prepare_content_length(self, body):
         self.headers["Content-Length"] = "0"
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+        # self.auth = ...
+        pass
         return
-
-
+    
+    
     def prepare_auth(self, auth, url=""):
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+        # self.auth = ...
+        if auth:
+            self.auth = auth
+        elif url:
+            from daemon.utils import get_auth_from_url
+            self.auth = get_auth_from_url(url)
+        else:
+            self.auth = None
         return
-
+    
     def prepare_cookies(self, cookies):
-            self.headers["Cookie"] = cookies
+        self.headers["Cookie"] = cookies
+    

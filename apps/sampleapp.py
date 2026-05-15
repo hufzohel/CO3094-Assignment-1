@@ -7,16 +7,10 @@
 #
 # AsynapRous release
 #
-# The authors hereby grant to Licensee personal permission to use
-# and modify the Licensed Source Code for the sole purpose of studying
-# while attending the course
-#
-
 
 """
 app.sampleapp
 ~~~~~~~~~~~~~~~~~
-
 """
 
 import sys
@@ -25,38 +19,55 @@ import importlib.util
 import urllib.request
 import urllib.error
 import json
+import uuid
+import asyncio
 from daemon import AsynapRous
 
 app = AsynapRous()
 
 # ==========================================
-# 1. THE IN-MEMORY TRACKER (Your "Database")
+# 1. THE IN-MEMORY DATABASES
 # ==========================================
-# This dictionary stores the active users. 
-# Format: {"username": {"ip": "192.168.1.5", "port": 5000}}
 active_peers = {}
+active_sessions = {} # Maps secure UUIDs to usernames
+chat_history = []
 
 # ==========================================
-# 1.5 THE BOUNCER (Authentication Helper)
+# 2. THE SECURE BOUNCER
 # ==========================================
 def is_authenticated(headers):
     """
-    Checks the incoming HTTP headers for the 'session_user' cookie.
-    Returns the username if found, otherwise returns False.
+    Checks the incoming HTTP headers for the 'session_id' cookie.
+    Looks up the secure ID in the server's vault.
     """
     header_str = str(headers)
-    if "session_user=" in header_str:
+    if "session_id=" in header_str:
         try:
-            parts = header_str.split("session_user=")
-            username = parts[1].split(";")[0].strip(" '\"}")
-            return username
+            parts = header_str.split("session_id=")
+            extracted_id = parts[1].split(";")[0].strip(" '\"}")
+            
+            # Check the vault for the real username
+            return active_sessions.get(extracted_id, False)
         except:
             return False
     return False
 
+# ==========================================
+# 3. THE HTTP WRAPPER
+# ==========================================
+def wrap_http(response_dict):
+    body = json.dumps(response_dict)
+    raw_http = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+        f"{body}"
+    )
+    return raw_http.encode("utf-8")
 
 # ==========================================
-# 2. THE LOGIN SWITCH (Cookie Issuer)
+# 4. SECURE LOGIN ROUTE
 # ==========================================
 @app.route('/login', methods=['POST'])
 async def login(headers="guest", body="anonymous"):
@@ -65,111 +76,88 @@ async def login(headers="guest", body="anonymous"):
         username = credentials.get("username")
         
         if username:
+            # 1. Generate an unguessable Session ID
+            session_id = str(uuid.uuid4())
+            
+            # 2. Store the truth in the server's memory vault
+            active_sessions[session_id] = username
+            
             response_body = json.dumps({"status": "success", "message": f"Welcome, {username}"})
             
-            # Manually craft the response to force the Set-Cookie header
+            # 3. Give the browser the secure ID AND the UI helper cookie
             raw_http = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: application/json\r\n"
-                f"Set-Cookie: session_user={username}; Path=/; HttpOnly\r\n"
+                f"Set-Cookie: session_id={session_id}; Path=/\r\n"
+                f"Set-Cookie: session_user={username}; Path=/\r\n"
                 f"Content-Length: {len(response_body)}\r\n\r\n"
                 f"{response_body}"
             )
             return raw_http.encode("utf-8")
         else:
-            return json.dumps({"status": "error", "message": "Missing username"}).encode("utf-8")
+            return wrap_http({"status": "error", "message": "Missing username"})
             
     except json.JSONDecodeError:
-        return json.dumps({"status": "error", "message": "Invalid JSON"}).encode("utf-8")
-
+        return wrap_http({"status": "error", "message": "Invalid JSON"})
 
 # ==========================================
-# 3. PEER REGISTRATION (Protected)
+# 5. TRACKER MANAGEMENT
 # ==========================================
 @app.route('/submit-info', methods=['POST'])
 async def submit_info(headers="guest", body="anonymous"):
-    # 1. Check for the wristband
     current_user = is_authenticated(headers)
     if not current_user:
-        return json.dumps({"status": "error", "message": "Unauthorized"}).encode("utf-8")
+        return wrap_http({"status": "error", "message": "Unauthorized"})
 
-    # 2. If they have it, register them
     try:
         payload = json.loads(body)
-        ip = payload.get("ip")
-        port = payload.get("port")
-        
-        if ip and port:
-            active_peers[current_user] = {"ip": ip, "port": port}
-            return json.dumps({"status": "success", "message": f"{current_user} registered."}).encode("utf-8")
-        else:
-            return json.dumps({"status": "error", "message": "Missing IP or Port"}).encode("utf-8")
+        if payload.get("ip") and payload.get("port"):
+            active_peers[current_user] = {"ip": payload.get("ip"), "port": payload.get("port")}
+            return wrap_http({"status": "success", "message": f"{current_user} registered."})
+        return wrap_http({"status": "error", "message": "Missing IP or Port"})
+    except:
+        return wrap_http({"status": "error", "message": "Invalid payload"})
 
-    except json.JSONDecodeError:
-        return json.dumps({"status": "error", "message": "Invalid payload"}).encode("utf-8")
-
-# ==========================================
-# 4. PEER DISCOVERY (Protected)
-# ==========================================
 @app.route('/get-list', methods=['GET'])
 async def get_list(headers="guest", body="anonymous"):
-    # Check for the wristband
     if not is_authenticated(headers):
-        return json.dumps({"status": "error", "message": "Unauthorized"}).encode("utf-8")
-        
-    data = {
-        "status": "success",
-        "active_peers": active_peers
-    }
-    return json.dumps(data).encode("utf-8")
-
+        return wrap_http({"status": "error", "message": "Unauthorized"})
+    return wrap_http({"status": "success", "active_peers": active_peers})
 
 # ==========================================
-# 5. LOCAL CHAT STORAGE
-# ==========================================
-# This stores the messages for YOUR specific screen.
-chat_history = []
-
-# ==========================================
-# 6. RECEIVE FROM PEER (NON-BLOCKING)
+# 6. RECEIVE FROM PEER (The Mailbox)
 # ==========================================
 @app.route('/send-peer', methods=['POST'])
 async def send_peer(headers="guest", body="anonymous"):
     try:
         payload = json.loads(body)
-        sender = payload.get("username", "Unknown")
-        message = payload.get("message", "")
-        channel = payload.get("channel", "general") # Extract the channel
-        
-        if message:
-            chat_history.append({"sender": sender, "message": message, "channel": channel})
-            print(f"[P2P - {channel}] {sender}: {message}")
-            return json.dumps({"status": "delivered"}).encode("utf-8")
-        else:
-            return json.dumps({"status": "error", "message": "Empty message"}).encode("utf-8")
-
-    except json.JSONDecodeError:
-        return json.dumps({"status": "error", "message": "Invalid format"}).encode("utf-8")
+        if payload.get("message"):
+            chat_history.append({
+                "sender": payload.get("username", "Unknown"), 
+                "message": payload.get("message", ""), 
+                "channel": payload.get("channel", "general"),
+                "is_direct": payload.get("is_direct", False)
+            })
+            return wrap_http({"status": "delivered"})
+        return wrap_http({"status": "error", "message": "Empty message"})
+    except:
+        return wrap_http({"status": "error", "message": "Invalid format"})
 
 # ==========================================
-# 7. UPDATE FRONTEND SCREEN (NON-BLOCKING)
+# 7. UPDATE FRONTEND SCREEN
 # ==========================================
 @app.route('/get-messages', methods=['GET'])
 async def get_messages(headers="guest", body="anonymous"):
-    data = {
-        "status": "success",
-        "messages": chat_history
-    }
-    return json.dumps(data).encode("utf-8")
+    return wrap_http({"status": "success", "messages": chat_history})
 
 # ==========================================
-# 8. THE BROADCASTER (P2P Sending)
+# 8. THE BROADCASTER (P2P Shotgun)
 # ==========================================
 @app.route('/broadcast-peer', methods=['POST'])
 async def broadcast_peer(headers="guest", body="anonymous"):
     current_user = is_authenticated(headers)
     if not current_user:
-        return json.dumps({"status": "error", "message": "Unauthorized"}).encode("utf-8")
+        return wrap_http({"status": "error", "message": "Unauthorized"})
 
     try:
         payload = json.loads(body)
@@ -177,38 +165,85 @@ async def broadcast_peer(headers="guest", body="anonymous"):
         channel = payload.get("channel", "general") 
         
         if not message:
-            return json.dumps({"status": "error", "message": "Empty message"}).encode("utf-8")
+            return wrap_http({"status": "error", "message": "Empty message"})
 
-        # Add it to your OWN screen history immediately
-        chat_history.append({"sender": current_user, "message": message, "channel": channel})
+        chat_history.append({"sender": current_user, "message": message, "channel": channel, "is_direct": False})
 
-        # Blast it to everyone else on the tracker!
-        broadcast_payload = json.dumps({"username": current_user, "message": message, "channel": channel}).encode('utf-8')
+        broadcast_payload = json.dumps({
+            "username": current_user, 
+            "message": message, 
+            "channel": channel,
+            "is_direct": False
+        }).encode('utf-8')
         
         for peer_name, info in active_peers.items():
-            # Don't send the message to yourself
             if peer_name == current_user:
                 continue
                 
-            ip = info['ip']
-            port = info['port']
-            url = f"http://{ip}:{port}/send-peer"
+            url = f"http://{info['ip']}:{info['port']}/send-peer"
             
             try:
-                # The actual "sending" action using native Python libraries
                 req = urllib.request.Request(url, data=broadcast_payload, method='POST')
                 req.add_header('Content-Type', 'application/json')
-                urllib.request.urlopen(req, timeout=2) # 2-second timeout prevents freezing
+                
+                # ASYNC FIX: Yield control to the Event Loop while the network request fires
+                await asyncio.to_thread(urllib.request.urlopen, req, timeout=2)
             except Exception:
-                # If a peer disconnected without telling us, just ignore them
                 pass 
 
-        return json.dumps({"status": "broadcast complete"}).encode("utf-8")
+        return wrap_http({"status": "broadcast complete"})
 
     except json.JSONDecodeError:
-        return json.dumps({"status": "error", "message": "Invalid format"}).encode("utf-8")
+        return wrap_http({"status": "error", "message": "Invalid format"})
+
+# ==========================================
+# 9. DIRECT MESSAGE (P2P Sniper Rifle)
+# ==========================================
+@app.route('/direct-peer', methods=['POST'])
+async def direct_peer(headers="guest", body="anonymous"):
+    current_user = is_authenticated(headers)
+    if not current_user:
+        return wrap_http({"status": "error", "message": "Unauthorized"})
+
+    try:
+        payload = json.loads(body)
+        message = payload.get("message", "")
+        target_user = payload.get("target_user", "")
+        
+        if not message or not target_user:
+            return wrap_http({"status": "error", "message": "Missing message or target"})
+
+        if target_user not in active_peers:
+            return wrap_http({"status": "error", "message": "Target user not found on tracker"})
+
+        # Add to your own screen so you can see what you sent
+        chat_history.append({"sender": f"{current_user} (To {target_user})", "message": message, "channel": "direct", "is_direct": True})
+
+        # Build payload for the target
+        direct_payload = json.dumps({
+            "username": f"{current_user} (Private)", 
+            "message": message, 
+            "channel": "direct",
+            "is_direct": True
+        }).encode('utf-8')
+        
+        # Get target's specific address
+        target_info = active_peers[target_user]
+        url = f"http://{target_info['ip']}:{target_info['port']}/send-peer"
+        
+        try:
+            req = urllib.request.Request(url, data=direct_payload, method='POST')
+            req.add_header('Content-Type', 'application/json')
+            
+            # ASYNC FIX: Shoot the direct message without blocking
+            await asyncio.to_thread(urllib.request.urlopen, req, timeout=2)
+            return wrap_http({"status": "success", "message": "Direct message sent"})
+        except Exception as e:
+            return wrap_http({"status": "error", "message": f"Failed to reach peer: {str(e)}"})
+
+    except json.JSONDecodeError:
+        return wrap_http({"status": "error", "message": "Invalid format"})
 
 def create_sampleapp(ip, port):
-    # Prepare and launch the RESTful application
     app.prepare_address(ip, port)
     app.run()

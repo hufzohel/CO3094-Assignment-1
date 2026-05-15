@@ -67,8 +67,8 @@ def forward_request(host, port, request):
             response += chunk
         return response
     except socket.error as e:
-      print("Socket error: {}".format(e))
-      return (
+        print("Socket error: {}".format(e))
+        return (
             "HTTP/1.1 404 Not Found\r\n"
             "Content-Type: text/plain\r\n"
             "Content-Length: 13\r\n"
@@ -105,7 +105,7 @@ def resolve_routing_policy(hostname, routes):
             # Use a dummy host to raise an invalid connection
             proxy_host = '127.0.0.1'
             proxy_port = '9000'
-        elif len(value) == 1:
+        elif len(proxy_map) == 1:
             proxy_host, proxy_port = proxy_map[0].split(":", 2)
         #elif: # apply the policy handling 
         #   proxy_map
@@ -140,7 +140,7 @@ def handle_client(ip, port, conn, addr, routes):
     """
 
     request = conn.recv(1024).decode()
-
+    hostname = "Unknown"
     # Extract hostname
     for line in request.splitlines():
         if line.lower().startswith('host:'):
@@ -192,6 +192,7 @@ def run_proxy(ip, port, routes):
         proxy.bind((ip, port))
         proxy.listen(50)
         print("[Proxy] Listening on IP {} port {}".format(ip,port))
+
         while True:
             conn, addr = proxy.accept()
             #
@@ -199,8 +200,11 @@ def run_proxy(ip, port, routes):
             #        using multi-thread programming with the
             #        provided handle_client routine
             #
+            client_thread = threading.Thread(target=handle_client, args=(ip, port, conn, addr, routes))
+            client_thread.start()
+            
     except socket.error as e:
-      print("Socket error: {}".format(e))
+        print("Socket error: {}".format(e))
 
 def create_proxy(ip, port, routes):
     """

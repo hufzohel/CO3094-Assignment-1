@@ -3,85 +3,130 @@
 <head>
     <title>P2P Chat MVP</title>
     <script>
-        // 1. LOGIN & REGISTER TO TRACKER
+        // --- 1. UI HELPERS ---
+        function getUsernameFromCookie() {
+            let match = document.cookie.match(new RegExp('(^| )session_user=([^;]+)'));
+            if (match) return match[2];
+            return ""; 
+        }
+
+        window.onload = function() {
+            let savedName = getUsernameFromCookie();
+            if (savedName !== "") {
+                document.getElementById('username').value = savedName; 
+                document.getElementById("status").innerText = "Logged in as " + savedName;
+            }
+        };
+
+        // --- 2. CORE NETWORK LOGIC ---
         async function login() {
             const username = document.getElementById("username").value;
+            const myPort = parseInt(document.getElementById("my_port").value);
             
-            // Hit the /login endpoint
+            // 1. Authenticate and get secure Session ID
             await fetch("/login", {
                 method: "POST",
                 body: JSON.stringify({username: username})
             });
 
-            // Hit the /submit-info endpoint to register on the tracker
-            // Note: For local testing, we are hardcoding the IP. 
+            // 2. Register with the Tracker using dynamic port!
             await fetch("/submit-info", {
                 method: "POST",
-                body: JSON.stringify({username: username, ip: "127.0.0.1", port: 2026}) 
+                body: JSON.stringify({username: username, ip: "127.0.0.1", port: myPort}) 
             });
             
             document.getElementById("status").innerText = "Logged in as " + username;
         }
 
-        // 2. AUTO-POLL FOR ACTIVE PEERS (Every 5 seconds)
+        // --- 3. BACKGROUND SYNC (Polling) ---
         setInterval(async () => {
             try {
                 const res = await fetch("/get-list");
                 const data = await res.json();
                 document.getElementById("peers").innerText = JSON.stringify(data.active_peers, null, 2);
-            } catch (e) {
-                console.log("Waiting for server...");
-            }
+            } catch (e) {}
         }, 5000);
 
-        // 3. AUTO-POLL FOR CHAT MESSAGES (Every 2 seconds)
         setInterval(async () => {
             try {
                 const res = await fetch("/get-messages");
                 const data = await res.json();
                 let chatText = "";
-                // Loop through messages and format them
-                data.messages.forEach(m => chatText += m.sender + ": " + m.message + "\n");
+                
+                data.messages.forEach(m => {
+                    // Make direct messages look slightly different in the UI
+                    if (m.is_direct) {
+                        chatText += "🔒 " + m.sender + ": " + m.message + "\n";
+                    } else {
+                        chatText += "📢 " + m.sender + ": " + m.message + "\n";
+                    }
+                });
                 document.getElementById("chatbox").innerText = chatText;
             } catch (e) {}
         }, 2000);
 
-        // 4. SEND A MESSAGE
-        async function sendMessage() {
+        // --- 4. MESSAGE CANNONS ---
+        // The Global Broadcaster
+        async function sendBroadcast() {
             const msg = document.getElementById("msg").value;
-            const username = document.getElementById("username").value;
             
-            await fetch("/send-peer", {
+            await fetch("/broadcast-peer", {
                 method: "POST",
-                body: JSON.stringify({username: username, message: msg})
+                body: JSON.stringify({message: msg, channel: "general"})
             });
             
-            document.getElementById("msg").value = ""; // Clear the input box
+            document.getElementById("msg").value = ""; 
+        }
+
+        // The 1:1 Sniper Rifle
+        async function sendDirectMessage() {
+            const msg = document.getElementById("msg").value;
+            const target = document.getElementById("target_user").value;
+
+            if (!target) {
+                alert("Please enter a Target Peer to send a direct message!");
+                return;
+            }
+            
+            await fetch("/direct-peer", {
+                method: "POST",
+                body: JSON.stringify({message: msg, target_user: target})
+            });
+            
+            document.getElementById("msg").value = ""; 
         }
     </script>
 </head>
-<body style="font-family: monospace;">
+<body style="font-family: monospace; background: #f4f4f9; padding: 20px;">
     <h2>CO3093/CO3094 MVP Dashboard</h2>
     
-    <div>
-        <strong>Username:</strong> <input id="username" type="text" placeholder="Enter name...">
+    <div style="background: white; padding: 15px; border: 1px solid #ccc; margin-bottom: 20px;">
+        <strong>Username:</strong> <input id="username" type="text" placeholder="Alice">
+        <strong>My Port:</strong> <input id="my_port" type="number" value="2026" style="width: 80px;">
         <button onclick="login()">Login & Register</button>
         <span id="status" style="color: green; font-weight: bold; margin-left: 10px;"></span>
     </div>
-    
-    <hr>
 
     <div style="display: flex; gap: 20px;">
         <div style="flex: 1;">
             <h3>Active Peers (Tracker)</h3>
-            <pre id="peers" style="background: #eee; padding: 10px; border: 1px solid #ccc; min-height: 200px;">Loading...</pre>
+            <pre id="peers" style="background: #272822; color: #f8f8f2; padding: 10px; border: 1px solid #ccc; min-height: 300px; border-radius: 5px;">Waiting for network...</pre>
         </div>
 
         <div style="flex: 2;">
             <h3>Live Chat</h3>
-            <pre id="chatbox" style="height: 200px; border: 1px solid black; background: #fafafa; padding: 10px; overflow-y: scroll;"></pre>
-            <input id="msg" type="text" placeholder="Type a message..." style="width: 70%;">
-            <button onclick="sendMessage()">Send</button>
+            <pre id="chatbox" style="height: 250px; border: 1px solid #ccc; background: white; padding: 10px; overflow-y: scroll; border-radius: 5px;"></pre>
+            
+            <div style="margin-top: 10px; display: flex; gap: 10px;">
+                <input id="msg" type="text" placeholder="Type a message..." style="flex: 2; padding: 5px;">
+                <button onclick="sendBroadcast()" style="background: #007bff; color: white; border: none; padding: 5px 15px; cursor: pointer;">Broadcast (All)</button>
+            </div>
+
+            <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center; background: #e9ecef; padding: 10px; border-radius: 5px;">
+                <strong style="font-size: 14px;">Direct Message:</strong>
+                <input id="target_user" type="text" placeholder="Target username (e.g. Bob)" style="padding: 5px; width: 200px;">
+                <button onclick="sendDirectMessage()" style="background: #28a745; color: white; border: none; padding: 5px 15px; cursor: pointer;">Send Direct (1:1)</button>
+            </div>
         </div>
     </div>
 </body>

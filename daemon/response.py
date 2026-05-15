@@ -163,7 +163,7 @@ class Response():
             elif sub_type == 'html':
                 base_dir = BASE_DIR+"www/"
             else:
-                handle_text_other(sub_type)
+                base_dir = BASE_DIR+"static/"
         elif main_type == 'image':
             base_dir = BASE_DIR+"static/"
             self.headers['Content-Type']='image/{}'.format(sub_type)
@@ -182,6 +182,12 @@ class Response():
         #        video/mpeg
         #        ...
         #
+        elif main_type == 'video':
+            base_dir = BASE_DIR+"static/"
+            self.headers['Content-Type']='video/{}'.format(sub_type)
+        elif main_type == 'audio':
+            base_dir = BASE_DIR+"static/"
+            self.headers['Content-Type']='audio/{}'.format(sub_type)
         else:
             raise ValueError("Invalid MEME type: main_type={} sub_type={}".format(main_type,sub_type))
 
@@ -207,7 +213,8 @@ class Response():
             #
         try:
             with open(filepath, "rb") as f:
-               content = f.read()
+                content = f.read()
+                return len(content), content
         except Exception as e:
             print("[Response] build_content exception: {}".format(e))
             return -1, b""
@@ -239,6 +246,8 @@ class Response():
         # TODO prepare the request authentication
         #
         #       self.auth = ...
+                "WWW-Authenticate": "{}".format(self.headers.get("WWW-Authenticate", 'Basic realm="AsynapRous"')),
+                "Set-Cookie": "{}".format(self.headers.get("Set-Cookie", "")),
                 "Date": "{}".format(datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")),
                 "Max-Forward": "10",
                 "Pragma": "no-cache",
@@ -252,10 +261,16 @@ class Response():
             #  TODO: implement the header building to create formated
             #        header from the provied headers
             #
-            #
-            # TODO prepare the request authentication
-            #
-            # self.auth = ...
+        fmt_header = f"HTTP/1.1 {getattr(self, 'status_code', 200)} {getattr(self, 'reason', 'OK')}\r\n"
+        for key, val in headers.items():
+            if val:
+                fmt_header += f"{key}: {val}\r\n"
+        fmt_header += "\r\n"
+        #
+        # TODO prepare the request authentication
+        #
+        # self.auth = ...
+        self.auth = getattr(request, 'auth', None)
 
 
         return str(fmt_header).encode('utf-8')
@@ -309,6 +324,35 @@ class Response():
         #
         # TODO: add support objects
         #
+        elif mime_type and '/' in mime_type:
+            try:
+                base_dir = self.prepare_content_type(mime_type=mime_type)
+            except ValueError:
+                pass
+                
+        # Build the body content for webapp hooks (envelop_content) or static files (base_dir)
+        if envelop_content:
+            if isinstance(envelop_content, bytes):
+                self._content = envelop_content
+            elif isinstance(envelop_content, dict):
+                import json
+                self._content = json.dumps(envelop_content).encode('utf-8')
+            else:
+                self._content = str(envelop_content).encode('utf-8')
+        elif base_dir:
+            length, self._content = self.build_content(path, base_dir)
+            if length == -1:
+                return self.build_notfound()
+                
+        # Build the response headers now that content is populated
+        if hasattr(self, '_content'):
+            self._header = self.build_response_header(request)
+
+        # Connect to the trailing 'else' block for 404 fallbacks:
+        # If valid content was found, it 'passes' and skips the final 'else'.
+        # If both base_dir and envelop_content are empty, it fails over to 'else'.
+        if base_dir or envelop_content:
+            pass
         else:
             return self.build_notfound()
 

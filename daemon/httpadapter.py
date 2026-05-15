@@ -111,11 +111,21 @@ class HttpAdapter:
         print("[HttpAdapter] Invoke handle_client connection {}".format(addr))
 
         # Handle request hook
+        # Handle request hook
         if req.hook:
-            #
-            # TODO: handle for App hook here
-            #
-            response = ""
+            if inspect.iscoroutinefunction(req.hook):
+                response = asyncio.run(req.hook(headers=req.headers, body=req.body))
+            else:
+                response = req.hook(headers=req.headers, body=req.body)
+            
+            # Send our custom raw HTTP response directly
+            conn.sendall(response)
+            conn.close()
+            return  # MUST have this return to exit early!
+            
+        else:
+            # Fallback for static files like index.html
+            response = resp.build_response(req)
 
         #print("[HttpAdapter] Response content {}".format(response))
         conn.sendall(response)
@@ -152,11 +162,15 @@ class HttpAdapter:
             #
             # TODO: handle for App hook here
             #
-            response = ""
-
-        # Build response
-        #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
-        response = resp.build_response(req)
+            if inspect.iscoroutinefunction(req.hook):
+                content = await req.hook(headers=req.headers, body=req.body)
+            else:
+                content = req.hook(headers=req.headers, body=req.body)
+            response = resp.build_response(req, content)
+        else:
+            # Build response
+            #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
+            response = resp.build_response(req)
 
         # Send all the response asynchronously
         writer.write(response)
@@ -288,7 +302,7 @@ class HttpAdapter:
         #       username, password =...
         # we provide dummy auth here
         #
-        username, password = ("user1", "password")
+        username, password = get_auth_from_url(proxy)
 
         if username:
             headers["Proxy-Authorization"] = (username, password)
