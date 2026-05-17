@@ -1,49 +1,87 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>P2P Chat MVP</title>
+    <title>P2P Chat MVP (Enterprise Sim)</title>
     <script>
-        // --- 1. UI HELPERS ---
         function getUsernameFromCookie() {
             let match = document.cookie.match(new RegExp('(^| )session_user=([^;]+)'));
             if (match) return match[2];
             return ""; 
         }
 
-        window.onload = function() {
+        window.onload = async function() {
+            const autoPort = window.location.port ? parseInt(window.location.port) : 80;
             let savedName = getUsernameFromCookie();
             if (savedName !== "") {
                 document.getElementById('username').value = savedName; 
-                document.getElementById("status").innerText = "Logged in as " + savedName;
+                
+                const response = await fetch("/submit-info", {
+                    method: "POST",
+                    body: JSON.stringify({username: savedName, ip: "127.0.0.1", port: autoPort}) 
+                });
+                
+                const data = await response.json();
+                if(data.status === "error") {
+                    document.getElementById("status").innerText = "Auto-Login: Tracker Failed (" + data.message + ")";
+                    document.getElementById("status").style.color = "red";
+                } else {
+                    document.getElementById("status").innerText = "Auto-Logged in as " + savedName + " (Port " + autoPort + ")";
+                    document.getElementById("status").style.color = "green";
+                }
             }
         };
 
-        // --- 2. CORE NETWORK LOGIC ---
+        function logout() {
+            document.cookie = "session_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+            document.cookie = "session_user=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+            window.location.reload();
+        }
+
         async function login() {
             const username = document.getElementById("username").value;
-            const myPort = parseInt(document.getElementById("my_port").value);
+            const autoPort = window.location.port ? parseInt(window.location.port) : 80;
             
-            // 1. Authenticate and get secure Session ID
             await fetch("/login", {
                 method: "POST",
                 body: JSON.stringify({username: username})
             });
 
-            // 2. Register with the Tracker using dynamic port!
-            await fetch("/submit-info", {
+            const response = await fetch("/submit-info", {
                 method: "POST",
-                body: JSON.stringify({username: username, ip: "127.0.0.1", port: myPort}) 
+                body: JSON.stringify({username: username, ip: "127.0.0.1", port: autoPort}) 
             });
             
-            document.getElementById("status").innerText = "Logged in as " + username;
+            const data = await response.json();
+            
+            if(data.status === "error") {
+                document.getElementById("status").innerText = "Auth Success, but Tracker Failed: " + data.message;
+                document.getElementById("status").style.color = "red";
+            } else {
+                document.getElementById("status").innerText = "Logged in as " + username + " (Port " + autoPort + ")";
+                document.getElementById("status").style.color = "green";
+            }
         }
 
-        // --- 3. BACKGROUND SYNC (Polling) ---
+        // --- BACKGROUND SYNCING ---
         setInterval(async () => {
             try {
                 const res = await fetch("/get-list");
                 const data = await res.json();
                 document.getElementById("peers").innerText = JSON.stringify(data.active_peers, null, 2);
+
+                const targetSelect = document.getElementById("target_user");
+                const currentTarget = targetSelect.value;
+                const myName = document.getElementById("username").value;
+                
+                let optionsHTML = '<option value="">-- Contact List --</option>';
+                for (let peer in data.active_peers) {
+                    if (peer !== myName) {
+                        let selected = (peer === currentTarget) ? "selected" : "";
+                        optionsHTML += `<option value="${peer}" ${selected}>${peer}</option>`;
+                    }
+                }
+                targetSelect.innerHTML = optionsHTML;
+
             } catch (e) {}
         }, 5000);
 
@@ -52,48 +90,66 @@
                 const res = await fetch("/get-messages");
                 const data = await res.json();
                 let chatText = "";
-                
                 data.messages.forEach(m => {
-                    // Make direct messages look slightly different in the UI
-                    if (m.is_direct) {
-                        chatText += "🔒 " + m.sender + ": " + m.message + "\n";
-                    } else {
-                        chatText += "📢 " + m.sender + ": " + m.message + "\n";
-                    }
+                    chatText += m.sender + ": " + m.message + "\n";
                 });
-                document.getElementById("chatbox").innerText = chatText;
+                document.getElementById("global_chatbox").innerText = chatText;
             } catch (e) {}
         }, 2000);
 
-        // --- 4. MESSAGE CANNONS ---
-        // The Global Broadcaster
+        setInterval(async () => {
+            const target = document.getElementById("target_user").value;
+            if (!target) {
+                document.getElementById("private_chatbox").innerText = "Select a contact above to load history...";
+                return; 
+            }
+
+            try {
+                const res = await fetch("/get-direct-messages", {
+                    method: "POST",
+                    body: JSON.stringify({target_user: target})
+                });
+                const data = await res.json();
+                let chatText = "";
+                data.messages.forEach(m => {
+                    chatText +=  m.sender + ": " + m.message + "\n";
+                });
+                document.getElementById("private_chatbox").innerText = chatText;
+            } catch (e) {}
+        }, 2000);
+
+        // --- MESSAGE CANNONS ---
         async function sendBroadcast() {
-            const msg = document.getElementById("msg").value;
-            
+            const msg = document.getElementById("global_msg").value;
             await fetch("/broadcast-peer", {
                 method: "POST",
-                body: JSON.stringify({message: msg, channel: "general"})
+                body: JSON.stringify({message: msg})
             });
-            
-            document.getElementById("msg").value = ""; 
+            document.getElementById("global_msg").value = ""; 
         }
 
-        // The 1:1 Sniper Rifle
         async function sendDirectMessage() {
-            const msg = document.getElementById("msg").value;
+            const msg = document.getElementById("private_msg").value;
             const target = document.getElementById("target_user").value;
 
             if (!target) {
-                alert("Please enter a Target Peer to send a direct message!");
+                alert("Please select a Contact from the dropdown to open a private channel!");
                 return;
             }
             
-            await fetch("/direct-peer", {
+            const response = await fetch("/direct-peer", {
                 method: "POST",
                 body: JSON.stringify({message: msg, target_user: target})
             });
             
-            document.getElementById("msg").value = ""; 
+            const data = await response.json();
+            
+            // UI FIX: Alert Alice if Charlie's Terminal is turned off!
+            if(data.status === "error") {
+                alert("Delivery Failed: " + data.message);
+            } else {
+                document.getElementById("private_msg").value = ""; 
+            }
         }
     </script>
 </head>
@@ -102,30 +158,39 @@
     
     <div style="background: white; padding: 15px; border: 1px solid #ccc; margin-bottom: 20px;">
         <strong>Username:</strong> <input id="username" type="text" placeholder="Alice">
-        <strong>My Port:</strong> <input id="my_port" type="number" value="2026" style="width: 80px;">
-        <button onclick="login()">Login & Register</button>
+        <button onclick="login()">Login & Auto-Register Network</button>
+        <button onclick="logout()" style="background: #dc3545; color: white; border: none; padding: 3px 10px; cursor: pointer; margin-left: 10px;">Logout</button>
         <span id="status" style="color: green; font-weight: bold; margin-left: 10px;"></span>
     </div>
 
     <div style="display: flex; gap: 20px;">
         <div style="flex: 1;">
-            <h3>Active Peers (Tracker)</h3>
-            <pre id="peers" style="background: #272822; color: #f8f8f2; padding: 10px; border: 1px solid #ccc; min-height: 300px; border-radius: 5px;">Waiting for network...</pre>
+            <h3>Tracker (DNS Equivalent)</h3>
+            <pre id="peers" style="background: #272822; color: #f8f8f2; padding: 10px; border: 1px solid #ccc; min-height: 550px; border-radius: 5px;">Waiting for network...</pre>
         </div>
 
-        <div style="flex: 2;">
-            <h3>Live Chat</h3>
-            <pre id="chatbox" style="height: 250px; border: 1px solid #ccc; background: white; padding: 10px; overflow-y: scroll; border-radius: 5px;"></pre>
+        <div style="flex: 1.5;">
+            <h3>Global Broadcast</h3>
+            <pre id="global_chatbox" style="height: 480px; border: 1px solid #ccc; background: white; padding: 10px; overflow-y: scroll; border-radius: 5px;"></pre>
+            <div style="margin-top: 10px; display: flex; gap: 10px;">
+                <input id="global_msg" type="text" placeholder="Shout to everyone..." style="flex: 2; padding: 5px;">
+                <button onclick="sendBroadcast()" style="background: #007bff; color: white; border: none; padding: 5px 15px; cursor: pointer;">Send Global</button>
+            </div>
+        </div>
+
+        <div style="flex: 1.5; background: #e9ecef; padding: 15px; border-radius: 5px; border: 1px solid #ccc;">
+            <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                <h3 style="margin: 0;">Private Chat:</h3>
+                <select id="target_user" style="padding: 5px; font-weight: bold; width: 150px; cursor: pointer;">
+                    <option value="">-- Contact List --</option>
+                </select>
+            </div>
+            
+            <pre id="private_chatbox" style="height: 430px; border: 1px solid #aaa; background: white; padding: 10px; overflow-y: scroll; border-radius: 5px; color: #333;">Select a contact above to load history...</pre>
             
             <div style="margin-top: 10px; display: flex; gap: 10px;">
-                <input id="msg" type="text" placeholder="Type a message..." style="flex: 2; padding: 5px;">
-                <button onclick="sendBroadcast()" style="background: #007bff; color: white; border: none; padding: 5px 15px; cursor: pointer;">Broadcast (All)</button>
-            </div>
-
-            <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center; background: #e9ecef; padding: 10px; border-radius: 5px;">
-                <strong style="font-size: 14px;">Direct Message:</strong>
-                <input id="target_user" type="text" placeholder="Target username (e.g. Bob)" style="padding: 5px; width: 200px;">
-                <button onclick="sendDirectMessage()" style="background: #28a745; color: white; border: none; padding: 5px 15px; cursor: pointer;">Send Direct (1:1)</button>
+                <input id="private_msg" type="text" placeholder="Type a secret..." style="flex: 2; padding: 5px;">
+                <button onclick="sendDirectMessage()" style="background: #28a745; color: white; border: none; padding: 5px 15px; cursor: pointer;">Send Private</button>
             </div>
         </div>
     </div>

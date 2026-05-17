@@ -1,0 +1,1 @@
+{"global": [], "private": {"Alice_Bob": [{"sender": "Bob", "message": "Hello"}], "Alice_Charlie": [{"sender": "Alice", "message": "Hi"}]}}
